@@ -1,0 +1,7 @@
+flask
+pyserial
+pandas
+numpy
+scipy
+matplotlib
+reportlab
