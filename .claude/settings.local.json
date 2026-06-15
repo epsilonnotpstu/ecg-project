@@ -1,0 +1,7 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python -c \"import serial; print\\('serial', serial.__version__, '— OK'\\)\")"
+    ]
+  }
+}

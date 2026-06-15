@@ -1,0 +1,214 @@
+{% extends "base.html" %}
+{% block title %}{{ patient.name }}{% endblock %}
+
+{% block content %}
+
+<div class="page-header">
+  <div class="container-xl">
+    <nav aria-label="breadcrumb">
+      <ol class="breadcrumb mb-2">
+        <li class="breadcrumb-item"><a href="{{ url_for('index') }}">Dashboard</a></li>
+        <li class="breadcrumb-item active">{{ patient.name }}</li>
+      </ol>
+    </nav>
+    <div class="d-flex align-items-center justify-content-between flex-wrap gap-3">
+      <h1>
+        <i class="fa-solid fa-user-circle me-2" style="color:var(--primary);"></i>
+        Patient Profile
+      </h1>
+      <a href="{{ url_for('record', patient_id=patient.id) }}"
+         class="btn btn-primary btn-lg">
+        <i class="fa-solid fa-heart-pulse me-2"></i>New Recording
+      </a>
+    </div>
+  </div>
+</div>
+
+<div class="container-xl pb-5">
+  <div class="row g-4">
+
+    <!-- Left: patient info card -->
+    <div class="col-12 col-lg-4">
+      <div class="cs-card p-0" style="overflow:hidden;">
+
+        <!-- Gradient header -->
+        <div style="background:linear-gradient(135deg,var(--primary),var(--secondary));
+                    padding:1.75rem 1.5rem;text-align:center;">
+          {% set initials = (patient.name.split()[0][0] + (patient.name.split()[1][0] if patient.name.split()|length > 1 else (patient.name[1]|default('')))) | upper %}
+          <div class="patient-avatar lg mx-auto mb-3"
+               style="background:rgba(255,255,255,.25);font-size:1.6rem;">
+            {{ initials }}
+          </div>
+          <h4 class="text-white fw-700 mb-1">{{ patient.name }}</h4>
+          <div style="font-size:.82rem;color:rgba(255,255,255,.75);">
+            Patient ID #{{ patient.id }}
+          </div>
+        </div>
+
+        <!-- Details -->
+        <div style="padding:1.25rem;">
+          <div class="row g-3">
+
+            <div class="col-6">
+              <div style="font-size:.72rem;text-transform:uppercase;letter-spacing:.05em;color:var(--text-3);">Age</div>
+              <div class="fw-600 mt-1">{{ patient.age or '—' }} {% if patient.age %}yrs{% endif %}</div>
+            </div>
+
+            <div class="col-6">
+              <div style="font-size:.72rem;text-transform:uppercase;letter-spacing:.05em;color:var(--text-3);">Gender</div>
+              <div class="fw-600 mt-1">
+                {% if patient.gender in ['M','male','Male'] %}
+                  <i class="fa-solid fa-mars me-1" style="color:#3b82f6;"></i>Male
+                {% elif patient.gender in ['F','female','Female'] %}
+                  <i class="fa-solid fa-venus me-1" style="color:#ec4899;"></i>Female
+                {% elif patient.gender %}
+                  {{ patient.gender }}
+                {% else %}—{% endif %}
+              </div>
+            </div>
+
+            <div class="col-12">
+              <div style="font-size:.72rem;text-transform:uppercase;letter-spacing:.05em;color:var(--text-3);">Registered</div>
+              <div class="fw-600 mt-1" style="font-size:.875rem;">
+                {{ patient.created_at[:16] | replace('T',' ') }}
+              </div>
+            </div>
+
+            {% if patient.symptoms %}
+              <div class="col-12">
+                <div style="font-size:.72rem;text-transform:uppercase;letter-spacing:.05em;color:var(--text-3);">Symptoms / Notes</div>
+                <div class="mt-1" style="font-size:.875rem;color:var(--text-2);line-height:1.5;">
+                  {{ patient.symptoms }}
+                </div>
+              </div>
+            {% endif %}
+
+          </div>
+
+          <hr style="border-color:var(--border);margin:1.1rem 0;" />
+
+          <!-- Quick stats -->
+          <div class="row g-2">
+            <div class="col-6">
+              <div class="metric-chip">
+                <div class="mc-val">{{ recordings|length }}</div>
+                <div class="mc-lbl">Recordings</div>
+              </div>
+            </div>
+            <div class="col-6">
+              <div class="metric-chip">
+                <div class="mc-val">
+                  {% set latest = recordings[0] if recordings else none %}
+                  {% if latest and latest.bpm %}
+                    {{ latest.bpm }}
+                  {% else %}—{% endif %}
+                </div>
+                <div class="mc-lbl">Latest BPM</div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+      </div>
+    </div>
+
+    <!-- Right: recordings history -->
+    <div class="col-12 col-lg-8">
+      <div class="cs-card" style="overflow:hidden;">
+
+        <div class="card-header-cs d-flex align-items-center justify-content-between">
+          <span>
+            <i class="fa-solid fa-clock-rotate-left me-2"></i>Recording History
+          </span>
+          <a href="{{ url_for('record', patient_id=patient.id) }}"
+             class="btn btn-primary btn-sm" style="font-size:.8rem;">
+            <i class="fa-solid fa-plus me-1"></i>Record Now
+          </a>
+        </div>
+
+        {% if recordings %}
+          <div class="table-responsive">
+            <table class="table-cs w-100" style="border-collapse:collapse;">
+              <thead>
+                <tr>
+                  <th>Date &amp; Time</th>
+                  <th>BPM</th>
+                  <th>Status</th>
+                  <th>Duration</th>
+                  <th>Actions</th>
+                </tr>
+              </thead>
+              <tbody>
+                {% for r in recordings %}
+                  {% set sc = status_class(r.status) %}
+                  <tr>
+                    <td>
+                      <div style="font-weight:600;font-size:.85rem;">{{ r.created_at[:10] }}</div>
+                      <div style="font-size:.75rem;color:var(--text-3);">{{ r.created_at[11:16] }}</div>
+                    </td>
+                    <td>
+                      {% if r.bpm %}
+                        <span style="font-size:1.1rem;font-weight:800;color:
+                          {% if sc == 'success' %}var(--success)
+                          {% elif sc == 'danger' %}var(--danger)
+                          {% else %}var(--warning){% endif %};">
+                          {{ r.bpm }}
+                        </span>
+                      {% else %}
+                        <span style="color:var(--text-3);">—</span>
+                      {% endif %}
+                    </td>
+                    <td>
+                      <span class="badge-status {{ sc }}">
+                        {% if sc == 'success' %}<i class="fa-solid fa-check"></i>
+                        {% elif sc == 'danger' %}<i class="fa-solid fa-xmark"></i>
+                        {% else %}<i class="fa-solid fa-exclamation"></i>{% endif %}
+                        {% if "Normal" in r.status %}Normal
+                        {% elif "Bradycardia" in r.status %}Brady
+                        {% elif "Tachycardia" in r.status %}Tachy
+                        {% else %}Unknown{% endif %}
+                      </span>
+                    </td>
+                    <td style="color:var(--text-2);">{{ r.duration_sec }}s</td>
+                    <td>
+                      <div class="d-flex gap-1">
+                        <a href="{{ url_for('result', recording_id=r.id) }}"
+                           class="btn btn-outline-primary btn-sm"
+                           data-bs-toggle="tooltip" title="View result">
+                          <i class="fa-solid fa-chart-area"></i>
+                        </a>
+                        <a href="{{ url_for('report', recording_id=r.id) }}"
+                           class="btn btn-light btn-sm"
+                           data-bs-toggle="tooltip" title="Download PDF"
+                           style="border-color:var(--border);">
+                          <i class="fa-solid fa-file-pdf" style="color:var(--danger);"></i>
+                        </a>
+                      </div>
+                    </td>
+                  </tr>
+                {% endfor %}
+              </tbody>
+            </table>
+          </div>
+        {% else %}
+          <div class="empty-state" style="padding:3rem 1rem;">
+            <div class="empty-icon">
+              <i class="fa-solid fa-wave-square"></i>
+            </div>
+            <h6 class="fw-700 mb-2">No recordings yet</h6>
+            <p class="text-muted mb-3" style="font-size:.85rem;">
+              Click "Record Now" to capture the first ECG for this patient.
+            </p>
+            <a href="{{ url_for('record', patient_id=patient.id) }}" class="btn btn-primary">
+              <i class="fa-solid fa-heart-pulse me-2"></i>Start Recording
+            </a>
+          </div>
+        {% endif %}
+
+      </div>
+    </div>
+
+  </div>
+</div>
+
+{% endblock %}
