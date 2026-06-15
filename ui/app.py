@@ -118,6 +118,7 @@ def record(patient_id):
 
 @app.route("/record/<int:patient_id>/start", methods=["POST"])
 def record_start(patient_id):
+    import logging
     from record_session import record as do_record
     from filter_signal import process_file
     from bpm_detect import analyze_file
@@ -134,21 +135,37 @@ def record_start(patient_id):
     timestamp = time.strftime("%Y%m%d_%H%M%S")
     session_name = f"patient{patient_id}_{timestamp}"
 
-    raw_csv           = do_record(duration, session_name)
+    raw_csv                    = do_record(duration, session_name)
     filtered_csv, compare_plot = process_file(raw_csv)
-    result            = analyze_file(filtered_csv)
+    result                     = analyze_file(filtered_csv)
+
+    # AI beat classification — non-fatal if model absent or error
+    ai = {"available": False, "dominant_class": None,
+          "class_distribution": {}, "alert_count": 0, "beats": []}
+    try:
+        from classify_recording import classify_recording
+        ai = classify_recording(raw_csv)
+    except Exception as exc:
+        logging.warning("classify_recording failed: %s", exc)
 
     conn = get_connection()
     cur = conn.execute("""
         INSERT INTO recordings
           (patient_id, session_name, duration_sec, raw_file, filtered_file,
-           compare_plot, bpm_plot, num_peaks, bpm, status, rr_intervals_json)
-        VALUES (?,?,?,?,?,?,?,?,?,?,?)
+           compare_plot, bpm_plot, num_peaks, bpm, status, rr_intervals_json,
+           ai_available, ai_dominant_class, ai_class_distribution,
+           ai_alert_count, ai_beats_json)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
     """, (
         patient_id, session_name, duration,
         raw_csv, filtered_csv, compare_plot, result["plot"],
         result["num_peaks"], result["bpm"], result["status"],
         json.dumps(result["rr_intervals_sec"]),
+        int(bool(ai.get("available", False))),
+        ai.get("dominant_class"),
+        json.dumps(ai.get("class_distribution", {})),
+        ai.get("alert_count", 0),
+        json.dumps(ai.get("beats", [])),
     ))
     recording_id = cur.lastrowid
     conn.commit()
@@ -182,9 +199,13 @@ def result(recording_id):
     conn.close()
 
     rr = json.loads(recording["rr_intervals_json"]) if recording["rr_intervals_json"] else []
+    ai_class_dist = json.loads(recording["ai_class_distribution"]) if recording["ai_class_distribution"] else {}
+    ai_beats      = json.loads(recording["ai_beats_json"])          if recording["ai_beats_json"]          else []
     return render_template("result.html",
                            recording=recording, patient=patient,
-                           rr_intervals=rr, report=report)
+                           rr_intervals=rr, report=report,
+                           ai_class_dist=ai_class_dist,
+                           ai_beats=ai_beats)
 
 
 @app.route("/report/<int:recording_id>")

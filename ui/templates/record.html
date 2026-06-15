@@ -97,10 +97,9 @@
             </div>
 
             <!-- Electrode guide -->
-            <div class="mb-5 p-3 d-flex align-items-start gap-3"
-                 style="background:#f0f9ff;border:1px solid #bae6fd;border-radius:var(--radius-sm);">
-              <i class="fa-solid fa-plug-circle-check mt-1 flex-shrink-0" style="color:#0284c7;"></i>
-              <div style="font-size:.82rem;color:#075985;line-height:1.65;">
+            <div class="mb-5 p-3 d-flex align-items-start gap-3 info-note">
+              <i class="fa-solid fa-plug-circle-check mt-1 flex-shrink-0 info-note-icon"></i>
+              <div class="info-note-text">
                 <strong class="d-block mb-1">Electrode Checklist</strong>
                 <ul class="mb-0 ps-3">
                   <li>RA (right arm) &amp; LA (left arm) electrodes are firmly attached</li>
@@ -207,12 +206,12 @@
     Do not remove the electrodes during recording.
   </p>
 
-  <!-- Processing notice (shown when timer hits 0) -->
-  <div class="mt-4 px-4 py-2"
+  <!-- Processing notice -->
+  <div id="rec-phase" class="mt-4 px-4 py-2"
        style="background:rgba(34,211,238,.12);border:1px solid rgba(34,211,238,.25);
               border-radius:8px;font-size:.8rem;color:#67e8f9;">
     <i class="fa-solid fa-microchip me-2"></i>
-    Signal is processed automatically after recording completes.
+    Signal is processed &amp; AI-analysed automatically after recording completes.
   </div>
 
 </div>

@@ -1,6 +1,14 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="en" data-theme="light">
 <head>
+  <!-- Theme applied before CSS renders — prevents flash -->
+  <script>
+    (function(){
+      var t = localStorage.getItem('cs-theme') || 'light';
+      document.documentElement.setAttribute('data-theme', t);
+    })();
+  </script>
+
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>{% block title %}CardioScan AI{% endblock %} — CardioScan AI</title>
@@ -23,7 +31,7 @@
 </head>
 <body>
 
-<!-- ── Navbar ───────────────────────────────────────────────────────────── -->
+<!-- ── Navbar ────────────────────────────────────────────────────────────── -->
 <nav class="cs-navbar">
   <div class="container-xl">
     <div class="d-flex align-items-center justify-content-between gap-3">
@@ -39,25 +47,34 @@
         </span>
       </a>
 
-      <!-- Desktop nav -->
-      <div class="d-none d-md-flex align-items-center gap-1">
+      <!-- Desktop nav + theme toggle -->
+      <div class="d-none d-md-flex align-items-center gap-2">
         <a href="{{ url_for('index') }}"
            class="nav-pill {{ 'active' if request.endpoint == 'index' else '' }}">
           <i class="fa-solid fa-house me-1"></i>Dashboard
         </a>
         <a href="{{ url_for('patient_new') }}"
-           class="btn btn-primary btn-sm ms-2 px-3"
-           style="border-radius:8px;font-weight:600;">
+           class="btn btn-primary btn-sm px-3"
+           style="border-radius:9px;font-weight:700;">
           <i class="fa-solid fa-plus me-1"></i>New Patient
         </a>
+        <!-- Theme toggle -->
+        <button class="theme-toggle" id="themeToggle" title="Toggle dark / light mode">
+          <i class="fa-solid fa-moon" id="themeIcon"></i>
+        </button>
       </div>
 
-      <!-- Mobile hamburger -->
-      <button class="btn btn-light btn-sm d-md-none" type="button"
-              data-bs-toggle="collapse" data-bs-target="#mobileMenu"
-              style="border-radius:8px;">
-        <i class="fa-solid fa-bars"></i>
-      </button>
+      <!-- Mobile controls -->
+      <div class="d-flex d-md-none align-items-center gap-2">
+        <button class="theme-toggle" id="themeToggleMobile" title="Toggle theme">
+          <i class="fa-solid fa-moon" id="themeIconMobile"></i>
+        </button>
+        <button class="btn btn-light btn-sm" type="button"
+                data-bs-toggle="collapse" data-bs-target="#mobileMenu"
+                style="border-radius:9px;border-color:var(--border);">
+          <i class="fa-solid fa-bars"></i>
+        </button>
+      </div>
     </div>
 
     <!-- Mobile menu -->
@@ -75,12 +92,13 @@
   </div>
 </nav>
 
-<!-- ── Flash messages ────────────────────────────────────────────────────── -->
+<!-- ── Flash messages ─────────────────────────────────────────────────────── -->
 {% with msgs = get_flashed_messages(with_categories=true) %}
   {% if msgs %}
     <div class="container-xl mt-3">
       {% for cat, msg in msgs %}
-        <div class="alert alert-{{ cat }} alert-dismissible d-flex align-items-center gap-2" role="alert">
+        <div class="alert alert-{{ cat }} alert-dismissible d-flex align-items-center gap-2"
+             role="alert" style="animation:fadeInUp .3s ease;">
           {% if cat == 'success' %}<i class="fa-solid fa-circle-check"></i>
           {% elif cat == 'danger' %}<i class="fa-solid fa-triangle-exclamation"></i>
           {% else %}<i class="fa-solid fa-circle-info"></i>{% endif %}
@@ -92,21 +110,21 @@
   {% endif %}
 {% endwith %}
 
-<!-- ── Main content ──────────────────────────────────────────────────────── -->
+<!-- ── Main content ───────────────────────────────────────────────────────── -->
 <main>
   {% block content %}{% endblock %}
 </main>
 
-<!-- ── Footer ───────────────────────────────────────────────────────────── -->
+<!-- ── Footer ────────────────────────────────────────────────────────────── -->
 <footer class="cs-footer">
-  <div class="container-xl">
-    <span class="me-2">
+  <div class="container-xl d-flex flex-wrap align-items-center justify-content-center gap-3">
+    <span>
       <i class="fa-solid fa-heart-pulse me-1 text-danger"></i>
       CardioScan AI — Raspberry Pi ECG Monitoring System
     </span>
-    &middot;
-    <span class="ms-2">
-      <i class="fa-solid fa-triangle-exclamation me-1" style="color:#d97706;"></i>
+    <span class="d-none d-sm-inline" style="color:var(--border);">|</span>
+    <span>
+      <i class="fa-solid fa-triangle-exclamation me-1" style="color:var(--warning);"></i>
       Not for clinical diagnosis — prototype only
     </span>
   </div>

@@ -56,6 +56,19 @@ def init_db():
         )
     """)
 
+    # Migrate: add AI columns if they don't exist yet
+    existing_cols = {row[1] for row in c.execute("PRAGMA table_info(recordings)")}
+    ai_migrations = [
+        ("ai_available",          "ALTER TABLE recordings ADD COLUMN ai_available INTEGER DEFAULT 0"),
+        ("ai_dominant_class",     "ALTER TABLE recordings ADD COLUMN ai_dominant_class TEXT"),
+        ("ai_class_distribution", "ALTER TABLE recordings ADD COLUMN ai_class_distribution TEXT"),
+        ("ai_alert_count",        "ALTER TABLE recordings ADD COLUMN ai_alert_count INTEGER DEFAULT 0"),
+        ("ai_beats_json",         "ALTER TABLE recordings ADD COLUMN ai_beats_json TEXT"),
+    ]
+    for col_name, sql in ai_migrations:
+        if col_name not in existing_cols:
+            c.execute(sql)
+
     conn.commit()
     conn.close()
 
