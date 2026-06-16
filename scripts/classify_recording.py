@@ -3,18 +3,17 @@ import os
 import numpy as np
 import pandas as pd
 from collections import Counter
-from scipy.signal import butter, filtfilt, iirnotch, find_peaks, resample_poly
+from scipy.signal import butter, filtfilt, iirnotch, find_peaks
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 
-SOURCE_FS = 250
-TARGET_FS = 125
+FS = 125          # ESP8266 now runs at 125Hz — no resampling needed
 BEAT_PRE = 90
 BEAT_POST = 97
 BEAT_LEN = 187
 
-_engine = None  # cached across calls — model loads once per process
+_engine = None
 
 
 def _get_engine():
@@ -29,29 +28,31 @@ def _get_engine():
     return _engine
 
 
-def load_and_resample(csv_path):
+def load_signal(csv_path):
+    """Load CSV and return signal at 125Hz (no resampling needed)."""
     df = pd.read_csv(csv_path)
     df = df[df["lead_ok"] == 1].reset_index(drop=True)
-    raw = df["value"].values.astype(float)
-    return resample_poly(raw, up=1, down=2)
+    return df["value"].values.astype(float)
 
 
-def filter_signal(sig, fs=TARGET_FS):
+def filter_signal(sig, fs=FS):
     b_notch, a_notch = iirnotch(50.0 / (fs / 2), 30.0)
     sig = filtfilt(b_notch, a_notch, sig)
     b, a = butter(4, [0.5 / (fs / 2), 40.0 / (fs / 2)], btype="band")
     return filtfilt(b, a, sig)
 
 
-def segment_beats(sig, fs=TARGET_FS):
+def segment_beats(sig, fs=FS):
     s = sig - np.mean(sig)
-    peaks, _ = find_peaks(s, height=np.std(s) * 1.5, distance=int(0.4 * fs))
+    min_dist = int(0.4 * fs)   # 0.4s minimum between beats = max 150 BPM
+    peaks, _ = find_peaks(s, height=np.std(s) * 1.5, distance=min_dist)
 
     beats = []
     for p in peaks:
         start, end = p - BEAT_PRE, p + BEAT_POST
         beat = np.zeros(BEAT_LEN, dtype=np.float32)
-        src_start, src_end = max(0, start), min(len(sig), end)
+        src_start = max(0, start)
+        src_end = min(len(sig), end)
         dst_start = src_start - start
         n = src_end - src_start
         beat[dst_start:dst_start + n] = sig[src_start:src_end]
@@ -67,20 +68,8 @@ def segment_beats(sig, fs=TARGET_FS):
 
 
 def classify_recording(raw_csv_path):
-    """
-    Returns:
-        {
-          available: bool,
-          num_beats: int,
-          dominant_class: str,
-          class_distribution: dict,
-          alert_count: int,
-          beats: list[dict]   # each: class_id, class_name, short_name,
-                               #       confidence, probabilities, alert, inference_ms
-        }
-    """
-    resampled = load_and_resample(raw_csv_path)
-    filtered = filter_signal(resampled)
+    sig = load_signal(raw_csv_path)
+    filtered = filter_signal(sig)
     beats, peaks = segment_beats(filtered)
 
     engine = _get_engine()

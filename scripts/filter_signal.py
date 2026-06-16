@@ -1,12 +1,14 @@
 import pandas as pd
 import numpy as np
-from scipy.signal import butter, filtfilt, iirnotch, find_peaks
+from scipy.signal import butter, filtfilt, iirnotch
+import matplotlib
+matplotlib.use("Agg")   # non-interactive backend — fixes tkinter crash in Flask thread
 import matplotlib.pyplot as plt
 import os
 import sys
 
-FS = 250          # sampling rate (Hz)
-NOTCH_FREQ = 50.0 # powerline frequency (Bangladesh = 50Hz)
+FS = 125          # ESP8266 now runs at 125Hz (delay 8ms, with MPU6050)
+NOTCH_FREQ = 50.0
 NOTCH_Q = 30.0
 
 def notch_filter(signal, fs=FS, freq=NOTCH_FREQ, Q=NOTCH_Q):
@@ -27,15 +29,11 @@ def process_file(csv_path):
 
     raw = df["value"].values.astype(float)
 
-    # Step 1: remove 50Hz powerline noise
     step1 = notch_filter(raw)
-
-    # Step 2: bandpass to remove baseline drift + high-freq noise
     filtered = bandpass_filter(step1)
 
     base_name = os.path.splitext(os.path.basename(csv_path))[0]
 
-    # ---- Save comparison plot ----
     plot_path = os.path.join("raw", "esp", f"{base_name}_compare.png")
     fig, axs = plt.subplots(2, 1, figsize=(12, 6))
     axs[0].plot(raw, color="gray", linewidth=0.8)
@@ -45,10 +43,9 @@ def process_file(csv_path):
     axs[1].set_xlabel("Sample")
     plt.tight_layout()
     plt.savefig(plot_path)
-    plt.close()
+    plt.close("all")   # close ALL figures — prevents tkinter resource leak
     print("Comparison plot saved:", plot_path)
 
-    # ---- Save filtered CSV ----
     out_dir = os.path.join("filtered", "esp")
     os.makedirs(out_dir, exist_ok=True)
     out_path = os.path.join(out_dir, f"{base_name}_filtered.csv")
