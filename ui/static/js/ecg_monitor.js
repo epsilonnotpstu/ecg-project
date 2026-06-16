@@ -1,315 +1,385 @@
 /* ═══════════════════════════════════════════════════════════════════════════
-   CardioScan AI — Real-Time ECG Monitor Engine
-   Two-layer canvas: static grid behind, live trace on top.
-   Sweeping phosphor / hospital-monitor style.
+   CardioScan AI — Real-Time ECG Monitor Engine  (v2 — fixed)
+
+   Root-cause fixes over v1:
+   1. _toY: replaced EMA-of-abs-deviation (decays to 0 → gain blow-up) with
+      peak/trough envelope (instant attack, very slow decay).  Signal always
+      fills ~45 % of canvas height, never clips.
+   2. Rendering: min-max column accumulator.  When sweepSec is large (≥ 6 s)
+      pxPerSample < 1 — multiple samples land in the same pixel column and the
+      old line-per-sample code produced solid green fills.  Now we accumulate
+      the signal envelope per CSS-pixel column and draw one segment per column
+      (the same technique real GE/Philips monitors use).
+   3. DPR: all drawing in CSS px via ctx.setTransform(dpr,0,0,dpr,0,0) —
+      eliminates double-scaling on repeated resize calls.
+   4. Drain rate: time-based (drain ≈ elapsed × sampleRate samples/frame,
+      × 1.5 headroom) so the write-head stays in sync with wall clock.
    ═══════════════════════════════════════════════════════════════════════════ */
 
 "use strict";
 
 /* ── ECG Display Engine ──────────────────────────────────────────────────── */
 class ECGDisplay {
-  /**
-   * @param {HTMLCanvasElement} gridCanvas  – background grid (drawn once)
-   * @param {HTMLCanvasElement} traceCanvas – live ECG trace (swept)
-   * @param {object} opts
-   *   sweepSec   – seconds of data visible at once (default 8)
-   *   sampleRate – Hz expected from source (default 250)
-   */
   constructor(gridCanvas, traceCanvas, opts = {}) {
-    this._gc  = gridCanvas;
-    this._tc  = traceCanvas;
-    this._gx  = gridCanvas.getContext("2d");
-    this._tx  = traceCanvas.getContext("2d");
+    this._gc = gridCanvas;
+    this._tc = traceCanvas;
 
     this.sweepSec   = opts.sweepSec   || 8;
     this.sampleRate = opts.sampleRate || 250;
 
-    this._dpr = window.devicePixelRatio || 1;
-    this._W   = 0;
-    this._H   = 0;
+    this._dpr  = window.devicePixelRatio || 1;
+    this._cssW = 0;
+    this._cssH = 0;
 
-    /* Signal state */
-    this._queue    = [];      // pending raw samples { v, ok }
-    this._writeX   = 0;      // fractional pixel write-head position
-    this._lastX    = 0;
-    this._lastY    = null;   // null = pen up
-    this._paused   = false;
+    /* Column min/max buffer (CSS pixel coordinates, one entry per column) */
+    this._colHigh = null;   // smallest Y value seen in this column (top of signal)
+    this._colLow  = null;   // largest  Y value seen in this column (bottom)
 
-    /* Auto-scale: EMA of signal min/max for DC-free, gain-adaptive display */
-    this._emaBaseline = null;
-    this._emaRange    = 80;   // initial expected range (ADC units)
+    /* Write head */
+    this._writeX  = 0;      // fractional CSS px position
+    this._lastCol = -1;     // last integer column written
 
-    /* Erase-block width (px) — blank zone ahead of write head */
-    this.ERASER_PX = 36;
+    /* Signal envelope (peak/trough tracking) */
+    this._baseline = null;
+    this._sigHigh  = null;  // peak envelope (fast attack, slow decay)
+    this._sigLow   = null;  // trough envelope
 
-    this._resize();
-    window.addEventListener("resize", () => this._resize());
+    /* Sample queue and timing */
+    this._queue         = [];
+    this._paused        = false;
+    this._lastFrameMs   = null;
+    this._raf           = null;
 
-    /* Grid colour constants */
-    this.GRID_MINOR  = "rgba(0,170,50,0.13)";
-    this.GRID_MAJOR  = "rgba(0,200,70,0.28)";
-    this.GRID_CENTER = "rgba(0,220,80,0.50)";
+    /* Appearance */
     this.TRACE_COLOR = "#00ff7f";
     this.BG_COLOR    = "#030d18";
+    this.ERASER_CSS  = 30;   // blank gap (CSS px) ahead of write head
+
+    this._resize();
+
+    /* ResizeObserver fires on initial layout AND subsequent resizes —
+       more reliable than window-resize for flex/grid containers. */
+    if (typeof ResizeObserver !== "undefined") {
+      const ro = new ResizeObserver(() => this._resize());
+      ro.observe(this._tc.parentElement || this._tc);
+    } else {
+      window.addEventListener("resize", () => this._resize());
+    }
 
     this._drawGrid();
-    this._raf = requestAnimationFrame(() => this._frame());
+    this._raf = requestAnimationFrame((t) => this._frame(t));
   }
 
   /* ── Public API ──────────────────────────────────────────────────────── */
 
-  push(v, ok) {
-    this._queue.push({ v, ok: !!ok });
-  }
-
-  pause() { this._paused = true; }
+  push(v, ok) { this._queue.push({ v, ok: !!ok }); }
+  pause()     { this._paused = true; }
 
   resume() {
-    this._paused = false;
-    this._queue  = [];   // drop stale samples
-    this._raf = requestAnimationFrame(() => this._frame());
+    this._paused      = false;
+    this._queue       = [];
+    this._lastFrameMs = null;
+    if (!this._raf) this._raf = requestAnimationFrame((t) => this._frame(t));
   }
 
   reset() {
-    this._queue    = [];
-    this._writeX   = 0;
-    this._lastY    = null;
-    this._lastX    = 0;
-    this._emaBaseline = null;
-    this._emaRange    = 80;
-    // Clear trace canvas
-    const tx = this._tx;
-    tx.clearRect(0, 0, this._W / this._dpr, this._H / this._dpr);
+    this._queue       = [];
+    this._writeX      = 0;
+    this._lastCol     = -1;
+    this._lastFrameMs = null;
+    this._baseline    = null;
+    this._sigHigh     = null;
+    this._sigLow      = null;
+    if (this._colHigh) { this._colHigh.fill(NaN); this._colLow.fill(NaN); }
+    const tx = this._tc.getContext("2d");
+    tx.setTransform(this._dpr, 0, 0, this._dpr, 0, 0);
+    tx.clearRect(0, 0, this._cssW, this._cssH);
   }
 
   destroy() {
-    cancelAnimationFrame(this._raf);
+    if (this._raf) { cancelAnimationFrame(this._raf); this._raf = null; }
   }
 
   /* ── Resize ──────────────────────────────────────────────────────────── */
 
   _resize() {
     const dpr  = this._dpr;
-    const wrap  = this._tc.parentElement;
-    const cssW  = wrap ? wrap.clientWidth  : 800;
-    const cssH  = wrap ? wrap.clientHeight : 260;
+    const wrap = this._tc.parentElement;
+    if (!wrap) return;
+    const cssW = wrap.clientWidth;
+    const cssH = wrap.clientHeight;
+    if (!cssW || !cssH) return;           // flex layout not computed yet
+    if (cssW === this._cssW && cssH === this._cssH) return;
 
-    if (cssW === this._W / dpr && cssH === this._H / dpr) return;
-
-    this._W = cssW * dpr;
-    this._H = cssH * dpr;
+    this._cssW = cssW;
+    this._cssH = cssH;
 
     for (const cvs of [this._gc, this._tc]) {
-      cvs.width        = this._W;
-      cvs.height       = this._H;
+      cvs.width        = cssW * dpr;
+      cvs.height       = cssH * dpr;
       cvs.style.width  = cssW + "px";
       cvs.style.height = cssH + "px";
+      /* setTransform (not scale) — idempotent on repeated resize */
+      cvs.getContext("2d").setTransform(dpr, 0, 0, dpr, 0, 0);
     }
 
-    // Recalculate pixels per sample
-    this._pxPerSample = this._W / (this.sweepSec * this.sampleRate);
+    this._pxPerSample = cssW / (this.sweepSec * this.sampleRate);
+    this._colHigh     = new Float32Array(cssW).fill(NaN);
+    this._colLow      = new Float32Array(cssW).fill(NaN);
 
     this._drawGrid();
     this.reset();
   }
 
-  /* ── Grid drawing (runs on resize) ──────────────────────────────────── */
+  /* ── Grid ────────────────────────────────────────────────────────────── */
 
   _drawGrid() {
-    const gx = this._gx;
-    const W  = this._W;
-    const H  = this._H;
-    const dpr = this._dpr;
+    const gx = this._gc.getContext("2d");
+    const W  = this._cssW;
+    const H  = this._cssH;
+    if (!W || !H) return;
 
+    gx.setTransform(this._dpr, 0, 0, this._dpr, 0, 0);
     gx.fillStyle = this.BG_COLOR;
     gx.fillRect(0, 0, W, H);
 
-    // 1px minor / 5px major grid at ECG paper proportions
-    // Minor: every 10px (1mm at 100dpi ≈ 40ms @ 25mm/s)
-    // Major: every 50px (5mm ≈ 200ms @ 25mm/s)
-    const minorPx = 10 * dpr;
-    const majorPx = 50 * dpr;
-
-    // Minor grid
-    gx.save();
-    gx.strokeStyle = this.GRID_MINOR;
-    gx.lineWidth   = 0.5 * dpr;
+    /* Minor grid every 10 CSS px */
+    gx.strokeStyle = "rgba(0,170,50,0.13)";
+    gx.lineWidth   = 0.5;
     gx.beginPath();
-    for (let x = 0; x <= W; x += minorPx) {
-      gx.moveTo(x, 0); gx.lineTo(x, H);
-    }
-    for (let y = 0; y <= H; y += minorPx) {
-      gx.moveTo(0, y); gx.lineTo(W, y);
-    }
+    for (let x = 0; x <= W; x += 10) { gx.moveTo(x, 0); gx.lineTo(x, H); }
+    for (let y = 0; y <= H; y += 10) { gx.moveTo(0, y); gx.lineTo(W, y); }
     gx.stroke();
 
-    // Major grid
-    gx.strokeStyle = this.GRID_MAJOR;
-    gx.lineWidth   = 0.8 * dpr;
+    /* Major grid every 50 CSS px */
+    gx.strokeStyle = "rgba(0,200,70,0.28)";
+    gx.lineWidth   = 0.8;
     gx.beginPath();
-    for (let x = 0; x <= W; x += majorPx) {
-      gx.moveTo(x, 0); gx.lineTo(x, H);
-    }
-    for (let y = 0; y <= H; y += majorPx) {
-      gx.moveTo(0, y); gx.lineTo(W, y);
-    }
+    for (let x = 0; x <= W; x += 50) { gx.moveTo(x, 0); gx.lineTo(x, H); }
+    for (let y = 0; y <= H; y += 50) { gx.moveTo(0, y); gx.lineTo(W, y); }
     gx.stroke();
 
-    // Center baseline
-    gx.strokeStyle = this.GRID_CENTER;
-    gx.lineWidth   = 0.6 * dpr;
-    gx.setLineDash([4 * dpr, 6 * dpr]);
+    /* Center baseline */
+    gx.strokeStyle = "rgba(0,220,80,0.45)";
+    gx.lineWidth   = 0.6;
+    gx.setLineDash([4, 8]);
     gx.beginPath();
     gx.moveTo(0, H / 2); gx.lineTo(W, H / 2);
     gx.stroke();
     gx.setLineDash([]);
 
-    // ECG paper corner labels (25mm/s, 10mm/mV)
-    gx.font         = `${9 * dpr}px Inter, monospace`;
-    gx.fillStyle    = "rgba(0,180,60,0.55)";
-    gx.textAlign    = "left";
-    gx.fillText("25 mm/s", 8 * dpr, H - 7 * dpr);
-    gx.textAlign    = "right";
-    gx.fillText("10 mm/mV", W - 8 * dpr, H - 7 * dpr);
-    gx.restore();
+    /* Speed / gain labels */
+    gx.font      = "9px Inter, monospace";
+    gx.fillStyle = "rgba(0,180,60,0.55)";
+    gx.textAlign = "left";
+    gx.fillText("25 mm/s", 8, H - 7);
+    gx.textAlign = "right";
+    gx.fillText("10 mm/mV", W - 8, H - 7);
   }
 
-  /* ── Signal value → canvas Y ─────────────────────────────────────────── */
+  /* ── Signal → canvas Y ───────────────────────────────────────────────── */
 
   _toY(v) {
-    const H = this._H;
-    if (this._emaBaseline === null) this._emaBaseline = v;
+    const H = this._cssH;
 
-    // Adaptive baseline (slow EMA removes DC drift)
-    this._emaBaseline = this._emaBaseline * 0.9975 + v * 0.0025;
-    const centred = v - this._emaBaseline;
-
-    // Adaptive range (fast EMA of absolute deviation)
-    const absC = Math.abs(centred);
-    this._emaRange = this._emaRange * 0.997 + absC * 0.003;
-    const range = Math.max(this._emaRange * 2.8, 15);
-
-    // Map to canvas Y (invert axis, keep 10% margin)
-    const y = H / 2 - (centred / range) * (H * 0.44);
-    return Math.max(2 * this._dpr, Math.min(H - 2 * this._dpr, y));
-  }
-
-  /* ── Main animation frame ────────────────────────────────────────────── */
-
-  _frame() {
-    if (this._paused) return;
-
-    // Drain the sample queue (up to 8 samples per frame — handles bursts)
-    const MAX_PER_FRAME = 8;
-    for (let i = 0; i < MAX_PER_FRAME && this._queue.length; i++) {
-      const { v, ok } = this._queue.shift();
-      this._drawSample(v, ok);
+    if (this._baseline === null) {
+      /* Bootstrap with ±80 ADC initial window (gives reasonable gain from
+         the very first sample regardless of actual signal amplitude). */
+      this._baseline = v;
+      this._sigHigh  = v + 80;
+      this._sigLow   = v - 80;
     }
 
-    this._raf = requestAnimationFrame(() => this._frame());
-  }
+    /* Baseline: very slow EMA (removes DC drift / breathing wander).
+       τ = 1/0.0025 = 400 samples ≈ 1.6 s at 250 Hz. */
+    this._baseline += (v - this._baseline) * 0.0025;
 
-  /* ── Draw one sample ─────────────────────────────────────────────────── */
-
-  _drawSample(v, ok) {
-    const tx   = this._tx;
-    const W    = this._W;
-    const H    = this._H;
-    const dpr  = this._dpr;
-    const x    = this._writeX;
-    const eW   = this.ERASER_PX * dpr;
-
-    // ── Erase ahead of write head (reveals grid beneath) ──────────────
-    tx.save();
-    tx.globalCompositeOperation = "destination-out";   // erase on trace canvas
-    const ex = (x + dpr) % W;
-    if (ex + eW <= W) {
-      tx.fillRect(ex, 0, eW, H);
+    /* Peak envelope — instant attack, very slow decay.
+       Decays toward (baseline + 40) so a minimum upward swing is preserved.
+       τ_decay ≈ 1/0.0002 = 5 000 samples ≈ 20 s at 250 Hz. */
+    if (v > this._sigHigh) {
+      this._sigHigh = v;
     } else {
-      tx.fillRect(ex, 0, W - ex, H);
-      tx.fillRect(0, 0, eW - (W - ex), H);
+      this._sigHigh += (this._baseline + 40 - this._sigHigh) * 0.0002;
     }
-    tx.globalCompositeOperation = "source-over";
 
-    // ── Draw trace segment ────────────────────────────────────────────
+    /* Trough envelope — symmetric. */
+    if (v < this._sigLow) {
+      this._sigLow = v;
+    } else {
+      this._sigLow += (this._baseline - 40 - this._sigLow) * 0.0002;
+    }
+
+    /* Dynamic range.  Minimum 80 ADC units prevents extreme zoom on flat
+       sections (e.g. before lead contact is made). */
+    const range = Math.max(this._sigHigh - this._sigLow, 80);
+    const mid   = (this._sigHigh + this._sigLow) * 0.5;
+
+    /* Normalise to [-0.5, 0.5] then scale to 45 % of canvas height.
+       R-peak (n=+0.5) sits at 27.5 % from top; baseline at 50 %;
+       S-trough (n≈-0.1) a little below — matches clinical ECG appearance. */
+    const n = Math.max(-0.5, Math.min(0.5, (v - mid) / range));
+    return H * 0.5 - n * H * 0.45;
+  }
+
+  /* ── Animation loop ──────────────────────────────────────────────────── */
+
+  _frame(ts) {
+    if (this._paused) { this._raf = null; return; }
+
+    /* Time-paced drain: consume roughly as many samples as have accumulated
+       since the last frame (× 1.5 headroom to recover from bursts). */
+    if (this._lastFrameMs === null) this._lastFrameMs = ts;
+    const elapsedSec = Math.min((ts - this._lastFrameMs) / 1000, 0.25); // cap at 250 ms
+    this._lastFrameMs = ts;
+
+    const maxDrain = Math.min(
+      this._queue.length,
+      Math.ceil(elapsedSec * this.sampleRate * 1.5) + 4  // +4 guarantees at least 4
+    );
+    for (let i = 0; i < maxDrain; i++) {
+      const { v, ok } = this._queue.shift();
+      this._ingestSample(v, ok);
+    }
+
+    this._redraw();
+    this._raf = requestAnimationFrame((t) => this._frame(t));
+  }
+
+  /* ── Ingest one sample into column buffer ────────────────────────────── */
+
+  _ingestSample(v, ok) {
+    if (!this._colHigh) return;   // canvas not sized yet
+    const W   = this._cssW;
+    const col = Math.floor(this._writeX);
+
+    /* On entering a new pixel column, clear it (erase prior-sweep data). */
+    if (col !== this._lastCol) {
+      this._colHigh[col] = NaN;
+      this._colLow[col]  = NaN;
+      this._lastCol = col;
+    }
+
     if (ok) {
       const y = this._toY(v);
-
-      if (
-        this._lastY !== null &&
-        Math.abs(x - this._lastX) < W * 0.6  // don't join across wrap gap
-      ) {
-        tx.beginPath();
-        tx.strokeStyle = this.TRACE_COLOR;
-        tx.lineWidth   = 1.8 * dpr;
-        tx.lineCap     = "round";
-        tx.lineJoin    = "round";
-        // Shadow glow for phosphor feel
-        tx.shadowColor = "rgba(0,255,127,0.45)";
-        tx.shadowBlur  = 4 * dpr;
-        tx.moveTo(this._lastX, this._lastY);
-        tx.lineTo(x, y);
-        tx.stroke();
+      if (isNaN(this._colHigh[col])) {
+        this._colHigh[col] = y;
+        this._colLow[col]  = y;
+      } else {
+        if (y < this._colHigh[col]) this._colHigh[col] = y;
+        if (y > this._colLow[col])  this._colLow[col]  = y;
       }
-
-      this._lastY = y;
-    } else {
-      // Lead-off: draw dotted flat line at center
-      if (this._lastY !== null && Math.abs(x - this._lastX) < W * 0.6) {
-        const cy = H / 2;
-        tx.setLineDash([3 * dpr, 6 * dpr]);
-        tx.strokeStyle = "rgba(255,200,0,0.5)";
-        tx.lineWidth   = 1 * dpr;
-        tx.beginPath();
-        tx.moveTo(this._lastX, cy);
-        tx.lineTo(x, cy);
-        tx.stroke();
-        tx.setLineDash([]);
-      }
-      this._lastY = H / 2;
     }
 
-    tx.restore();
-    this._lastX = x;
-
-    // ── Advance write head ────────────────────────────────────────────
     this._writeX += this._pxPerSample;
     if (this._writeX >= W) {
       this._writeX -= W;
-      this._lastY   = null;    // lift pen on wrap
+      this._lastCol = -1;  // allow clearing col 0 on next wrap
     }
   }
+
+  /* ── Redraw trace canvas from column buffer ──────────────────────────── */
+
+  _redraw() {
+    if (!this._colHigh) return;   // canvas not sized yet
+    const tx       = this._tc.getContext("2d");
+    const W        = this._cssW;
+    const H        = this._cssH;
+    const writeCol = Math.floor(this._writeX);
+    const ERASE    = this.ERASER_CSS;
+    const pps      = this._pxPerSample;
+
+    tx.clearRect(0, 0, W, H);
+
+    /* ── Pass 1: connecting polyline (midpoints of each column range) ── */
+    tx.save();
+    tx.strokeStyle = this.TRACE_COLOR;
+    tx.lineWidth   = 1.8;
+    tx.lineJoin    = "round";
+    tx.lineCap     = "round";
+    tx.shadowColor = "rgba(0,255,127,0.40)";
+    tx.shadowBlur  = 3;
+
+    tx.beginPath();
+    let penDown  = false;
+    let prevCol  = -2;
+
+    for (let c = 0; c < W; c++) {
+      /* Erase zone: 1 .. ERASE columns ahead of the write head. */
+      const ahead = (c - writeCol + W) % W;
+      if (ahead >= 1 && ahead <= ERASE) { penDown = false; prevCol = -2; continue; }
+
+      const hi = this._colHigh[c];
+      if (isNaN(hi)) { penDown = false; prevCol = -2; continue; }
+
+      const lo  = this._colLow[c];
+      const mid = (hi + lo) * 0.5;
+
+      /* Only connect columns that are truly adjacent (≤ 1 apart). */
+      if (!penDown || c - prevCol > 1) {
+        tx.moveTo(c + 0.5, mid);
+        penDown = true;
+      } else {
+        tx.lineTo(c + 0.5, mid);
+      }
+      prevCol = c;
+    }
+    tx.stroke();
+
+    /* ── Pass 2: vertical extent (only when multiple samples per pixel) ──
+       Draws a thin vertical segment from column min to max Y, giving the
+       signal its proper amplitude envelope at compressed time scales.
+       This is what real monitors do and fixes the solid-fill appearance. */
+    if (pps < 1.5) {
+      tx.lineWidth   = 1.1;
+      tx.shadowBlur  = 0;
+      tx.strokeStyle = "rgba(0,255,127,0.72)";
+      tx.beginPath();
+
+      for (let c = 0; c < W; c++) {
+        const ahead = (c - writeCol + W) % W;
+        if (ahead >= 1 && ahead <= ERASE) continue;
+
+        const hi = this._colHigh[c];
+        const lo = this._colLow[c];
+        if (isNaN(hi) || lo - hi < 1.5) continue;  // < 1.5 px: single-point, skip
+
+        tx.moveTo(c + 0.5, hi);
+        tx.lineTo(c + 0.5, lo);
+      }
+      tx.stroke();
+    }
+
+    tx.restore();
+  }
 }
+
 
 /* ── BPM Calculator ──────────────────────────────────────────────────────── */
 class BPMCalc {
   constructor(sampleRate = 250) {
-    this.sr        = sampleRate;
-    this.REFRACT   = Math.floor(0.33 * sampleRate);   // 330ms refractory
-    this.peaks     = [];      // sample indices of detected peaks
-    this.lastPeak  = -Infinity;
-    this.sampleIdx = 0;
-    this.prev      = 512;
-
-    // Adaptive threshold
-    this._emaHigh  = 512;
-    this._emaLow   = 512;
-    this.onPeak    = null;    // callback(sampleIdx)
+    this.sr       = sampleRate;
+    this.REFRACT  = Math.floor(0.33 * sampleRate);  // 330 ms
+    this.peaks    = [];
+    this.lastPeak = -Infinity;
+    this.sampleIdx= 0;
+    this.prev     = 512;
+    this._emaHigh = 512;
+    this._emaLow  = 512;
+    this.onPeak   = null;
   }
 
   add(v, ok) {
     if (!ok) { this.sampleIdx++; this.prev = v; return; }
 
-    // Track slow EMA of high and low
-    if (v > this._emaHigh) this._emaHigh = this._emaHigh * 0.99 + v * 0.01;
+    if (v > this._emaHigh) this._emaHigh = this._emaHigh * 0.99  + v * 0.01;
     else                   this._emaHigh = this._emaHigh * 0.9995 + v * 0.0005;
 
-    if (v < this._emaLow)  this._emaLow  = this._emaLow * 0.99  + v * 0.01;
-    else                   this._emaLow  = this._emaLow * 0.9995 + v * 0.0005;
+    if (v < this._emaLow)  this._emaLow  = this._emaLow  * 0.99  + v * 0.01;
+    else                   this._emaLow  = this._emaLow  * 0.9995 + v * 0.0005;
 
     const thresh = this._emaLow + (this._emaHigh - this._emaLow) * 0.62;
 
-    // Rising edge crossing threshold
     if (this.prev < thresh && v >= thresh &&
         this.sampleIdx - this.lastPeak > this.REFRACT) {
       this.peaks.push(this.sampleIdx);
@@ -326,13 +396,13 @@ class BPMCalc {
     if (this.peaks.length < 2) return null;
     let sum = 0;
     for (let i = 1; i < this.peaks.length; i++) sum += this.peaks[i] - this.peaks[i - 1];
-    const avgRR = sum / (this.peaks.length - 1);
-    const bpm   = Math.round(60 * this.sr / avgRR);
+    const avg = sum / (this.peaks.length - 1);
+    const bpm = Math.round(60 * this.sr / avg);
     return (bpm >= 25 && bpm <= 260) ? bpm : null;
   }
 
   reset() {
-    this.peaks = [];
+    this.peaks     = [];
     this.lastPeak  = -Infinity;
     this.sampleIdx = 0;
     this._emaHigh  = 512;
@@ -340,25 +410,24 @@ class BPMCalc {
   }
 }
 
+
 /* ── Monitor Controller ──────────────────────────────────────────────────── */
 class ECGMonitor {
   constructor() {
     this.display     = null;
     this.bpmCalc     = null;
-    this.es          = null;    // EventSource
+    this.es          = null;
     this.connected   = false;
-    this.simMode     = false;
     this.sampleCount = 0;
     this.leadOk      = true;
     this.bpm         = null;
-    this.lastPeakAt  = null;   // for heart animation
+    this._paused     = false;
+    this._bpmHistory = [];
 
     this._bindUI();
     this._initDisplay();
     this._startClock();
   }
-
-  /* ── UI bindings ───────────────────────────────────────────────────── */
 
   _bindUI() {
     this._$bpmVal      = document.getElementById("bpmVal");
@@ -378,12 +447,7 @@ class ECGMonitor {
             .addEventListener("click", () => this._togglePause());
     document.getElementById("btnSweep")
             .addEventListener("change", e => this._setSweep(+e.target.value));
-
-    this._paused = false;
-    this._bpmHistory = [];
   }
-
-  /* ── Init canvases ─────────────────────────────────────────────────── */
 
   _initDisplay() {
     const gc  = document.getElementById("ecgGrid");
@@ -400,14 +464,11 @@ class ECGMonitor {
     this.bpmCalc = bpm;
   }
 
-  /* ── Connect / Disconnect ──────────────────────────────────────────── */
-
   _connect() {
     const port = document.getElementById("serialPort").value.trim() || "/dev/ttyUSB0";
     const sim  = document.getElementById("chkSim").checked;
-    this.simMode = sim;
 
-    this._disconnect();   // close existing connection first
+    this._disconnect();
     this.display.reset();
     this.bpmCalc.reset();
     this.sampleCount = 0;
@@ -422,12 +483,13 @@ class ECGMonitor {
       try { d = JSON.parse(e.data); } catch { return; }
 
       if (d.status) {
-        if (d.status === "connected")   this._setStatus("live",       "Connected: " + d.port);
-        if (d.status === "simulating")  this._setStatus("simulating", "Simulation");
-        if (d.status === "error")       this._setStatus("error",      d.msg || "Serial error");
-        if (this._$simBadge) {
+        const map = { connected: ["live", "Connected: " + d.port],
+                      simulating: ["simulating", "Simulation"],
+                      error: ["error", d.msg || "Serial error"] };
+        const [state, text] = map[d.status] || ["idle", d.status];
+        this._setStatus(state, text);
+        if (this._$simBadge)
           this._$simBadge.style.display = (d.status === "simulating") ? "inline-flex" : "none";
-        }
         return;
       }
 
@@ -442,8 +504,7 @@ class ECGMonitor {
         this.bpmCalc.add(d.v, d.ok);
       }
 
-      // Update lead status every 50 samples
-      if (this.sampleCount % 50 === 0) this._updateLeadStatus();
+      if (this.sampleCount % 50  === 0) this._updateLeadStatus();
       if (this.sampleCount % 125 === 0) {
         this.bpm = this.bpmCalc.bpm();
         this._updateBPM();
@@ -452,16 +513,11 @@ class ECGMonitor {
       }
     };
 
-    this.es.onerror = () => {
-      this._setStatus("error", "Stream disconnected");
-    };
+    this.es.onerror = () => this._setStatus("error", "Stream disconnected");
   }
 
   _disconnect() {
-    if (this.es) {
-      this.es.close();
-      this.es = null;
-    }
+    if (this.es) { this.es.close(); this.es = null; }
     this.connected = false;
     this._setStatus("idle", "Disconnected");
   }
@@ -482,17 +538,15 @@ class ECGMonitor {
   }
 
   _setSweep(sec) {
-    this.display.sweepSec = sec;
-    this.display._pxPerSample = this.display._W / (sec * this.display.sampleRate);
+    this.display.sweepSec    = sec;
+    this.display._pxPerSample = this.display._cssW / (sec * this.display.sampleRate);
     this.display.reset();
   }
-
-  /* ── UI updates ────────────────────────────────────────────────────── */
 
   _setStatus(state, text) {
     const el = this._$connStatus;
     if (!el) return;
-    el.className = `mon-status-badge mon-status-${state}`;
+    el.className   = `mon-status-badge mon-status-${state}`;
     el.textContent = text;
   }
 
@@ -501,9 +555,7 @@ class ECGMonitor {
     if (!el) return;
     if (this.bpm) {
       el.textContent = this.bpm;
-      el.className   = "bpm-digital" + (
-        this.bpm < 50 || this.bpm > 120 ? " bpm-abnormal" : ""
-      );
+      el.className   = "bpm-digital" + (this.bpm < 50 || this.bpm > 120 ? " bpm-abnormal" : "");
       this._bpmHistory.push(this.bpm);
       if (this._bpmHistory.length > 30) this._bpmHistory.shift();
       this._drawSparkline();
@@ -528,7 +580,7 @@ class ECGMonitor {
     const el = this._$heartIcon;
     if (!el) return;
     el.classList.remove("heart-beat");
-    void el.offsetWidth;   // reflow to restart animation
+    void el.offsetWidth;
     el.classList.add("heart-beat");
   }
 
@@ -543,39 +595,30 @@ class ECGMonitor {
     const lo   = Math.min(...vals) - 5;
     const hi   = Math.max(...vals) + 5;
     const toY  = v => H - ((v - lo) / (hi - lo)) * H;
-    const toX  = (i) => (i / (vals.length - 1)) * W;
+    const toX  = i => (i / (vals.length - 1)) * W;
 
     ctx.beginPath();
     ctx.strokeStyle = "#fbbf24";
     ctx.lineWidth   = 1.5;
     ctx.lineJoin    = "round";
-    vals.forEach((v, i) => {
-      i === 0 ? ctx.moveTo(toX(i), toY(v)) : ctx.lineTo(toX(i), toY(v));
-    });
+    vals.forEach((v, i) => i === 0 ? ctx.moveTo(toX(i), toY(v)) : ctx.lineTo(toX(i), toY(v)));
     ctx.stroke();
   }
 
-  /* ── Clock ─────────────────────────────────────────────────────────── */
-
   _startClock() {
     const fmt = () => {
-      const n = new Date();
-      const z = x => String(x).padStart(2, "0");
+      const n = new Date(), z = x => String(x).padStart(2, "0");
       return `${z(n.getHours())}:${z(n.getMinutes())}:${z(n.getSeconds())}`;
     };
-    const update = () => {
-      if (this._$clock) this._$clock.textContent = fmt();
-    };
-    update();
-    setInterval(update, 1000);
+    const tick = () => { if (this._$clock) this._$clock.textContent = fmt(); };
+    tick();
+    setInterval(tick, 1000);
   }
 }
 
 /* ── Boot ────────────────────────────────────────────────────────────────── */
 document.addEventListener("DOMContentLoaded", () => {
   window._ecgMon = new ECGMonitor();
-  // Auto-connect if URL has ?autostart=1
-  if (new URLSearchParams(location.search).get("autostart") === "1") {
+  if (new URLSearchParams(location.search).get("autostart") === "1")
     setTimeout(() => document.getElementById("btnConnect").click(), 500);
-  }
 });
