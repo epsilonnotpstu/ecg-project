@@ -1,0 +1,635 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+  <script>/* always dark — override any user preference */
+    document.documentElement.setAttribute("data-theme","dark");
+  </script>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Live ECG Monitor — CardioScan AI</title>
+
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&family=Share+Tech+Mono&display=swap"
+        rel="stylesheet" />
+
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet" />
+  <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css" rel="stylesheet" />
+  <link href="{{ url_for('static', filename='css/custom.css') }}" rel="stylesheet" />
+
+  <style>
+    /* ── Monitor page always dark ─────────────────────────────────────── */
+    html, body {
+      height: 100%;
+      margin: 0;
+      background: #020a18;
+      color: #e2e8f0;
+      font-family: 'Inter', sans-serif;
+      overflow: hidden;
+    }
+
+    /* ── Full-screen layout ───────────────────────────────────────────── */
+    .mon-shell {
+      display: flex;
+      flex-direction: column;
+      height: 100vh;
+      overflow: hidden;
+    }
+
+    /* ── Top bar ──────────────────────────────────────────────────────── */
+    .mon-topbar {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: .55rem 1.25rem;
+      background: rgba(5,15,35,.95);
+      border-bottom: 1px solid rgba(0,200,70,.18);
+      flex-shrink: 0;
+      gap: 1rem;
+      flex-wrap: wrap;
+    }
+
+    .mon-brand {
+      display: flex;
+      align-items: center;
+      gap: .5rem;
+      font-weight: 800;
+      font-size: 1rem;
+      letter-spacing: -.02em;
+      color: #e2e8f0;
+      text-decoration: none;
+    }
+
+    .mon-brand-icon {
+      width: 32px; height: 32px;
+      background: linear-gradient(135deg, #2563eb, #0ea5e9);
+      border-radius: 8px;
+      display: flex; align-items: center; justify-content: center;
+      font-size: .85rem; color: white;
+      animation: brandPulse 3s ease-in-out infinite;
+    }
+
+    .mon-topbar-controls {
+      display: flex;
+      align-items: center;
+      gap: .6rem;
+      flex-wrap: wrap;
+    }
+
+    .mon-field {
+      font-size: .78rem;
+      background: rgba(255,255,255,.05);
+      border: 1px solid rgba(255,255,255,.12);
+      border-radius: 7px;
+      color: #e2e8f0;
+      padding: .3rem .65rem;
+      height: 32px;
+      outline: none;
+      transition: border-color .2s;
+    }
+
+    .mon-field:focus { border-color: rgba(0,200,70,.5); }
+
+    .mon-field-label {
+      font-size: .72rem;
+      color: rgba(255,255,255,.4);
+      white-space: nowrap;
+    }
+
+    select.mon-field option { background: #0a1628; }
+
+    .mon-chk-wrap {
+      display: flex;
+      align-items: center;
+      gap: .4rem;
+      font-size: .78rem;
+      color: rgba(255,255,255,.55);
+      white-space: nowrap;
+    }
+
+    .mon-chk-wrap input[type="checkbox"] { accent-color: #00ff7f; }
+
+    /* Buttons */
+    .btn-mon {
+      height: 32px;
+      padding: 0 .9rem;
+      border-radius: 7px;
+      font-size: .78rem;
+      font-weight: 600;
+      border: 1px solid rgba(255,255,255,.15);
+      background: rgba(255,255,255,.07);
+      color: #e2e8f0;
+      cursor: pointer;
+      display: inline-flex;
+      align-items: center;
+      gap: .35rem;
+      transition: all .18s;
+      white-space: nowrap;
+    }
+
+    .btn-mon:hover { background: rgba(255,255,255,.14); border-color: rgba(255,255,255,.3); }
+
+    .btn-mon-green {
+      background: rgba(0,200,70,.18);
+      border-color: rgba(0,200,70,.45);
+      color: #00ff7f;
+    }
+
+    .btn-mon-green:hover { background: rgba(0,200,70,.3); box-shadow: 0 0 12px rgba(0,255,127,.2); }
+
+    .btn-mon-red {
+      background: rgba(220,38,38,.18);
+      border-color: rgba(220,38,38,.45);
+      color: #f87171;
+    }
+
+    .btn-mon-red:hover { background: rgba(220,38,38,.3); }
+
+    .btn-mon-active {
+      background: rgba(79,135,255,.25);
+      border-color: rgba(79,135,255,.5);
+      color: #93c5fd;
+    }
+
+    /* Status badge */
+    .mon-status-badge {
+      font-size: .72rem;
+      font-weight: 700;
+      padding: .22rem .7rem;
+      border-radius: 999px;
+      letter-spacing: .03em;
+      white-space: nowrap;
+    }
+
+    .mon-status-idle      { background: rgba(255,255,255,.06); color: rgba(255,255,255,.4); }
+    .mon-status-live      { background: rgba(0,255,127,.12); color: #00ff7f;
+                            animation: liveGlow .9s ease-in-out infinite alternate; }
+    .mon-status-simulating{ background: rgba(251,191,36,.12); color: #fbbf24; }
+    .mon-status-error     { background: rgba(248,113,113,.12); color: #f87171; }
+
+    @keyframes liveGlow {
+      from { box-shadow: none; }
+      to   { box-shadow: 0 0 10px rgba(0,255,127,.4); }
+    }
+
+    /* Sim badge */
+    .sim-badge {
+      display: none;
+      align-items: center;
+      gap: .3rem;
+      font-size: .7rem;
+      font-weight: 700;
+      background: rgba(251,191,36,.14);
+      border: 1px solid rgba(251,191,36,.35);
+      color: #fbbf24;
+      padding: .2rem .6rem;
+      border-radius: 999px;
+    }
+
+    .mon-clock {
+      font-family: 'Share Tech Mono', monospace;
+      font-size: .95rem;
+      color: rgba(255,255,255,.5);
+      letter-spacing: .05em;
+      white-space: nowrap;
+    }
+
+    .mon-back-link {
+      font-size: .78rem;
+      color: rgba(255,255,255,.4);
+      text-decoration: none;
+      display: flex;
+      align-items: center;
+      gap: .3rem;
+      transition: color .15s;
+    }
+
+    .mon-back-link:hover { color: #93c5fd; }
+
+    /* ── ECG Canvas area ──────────────────────────────────────────────── */
+    .mon-ecg-area {
+      flex: 1;
+      position: relative;
+      overflow: hidden;
+      background: #030d18;
+    }
+
+    /* Channel strip label */
+    .mon-channel-label {
+      position: absolute;
+      top: 10px;
+      left: 14px;
+      font-family: 'Share Tech Mono', monospace;
+      font-size: .82rem;
+      color: rgba(0,200,70,.7);
+      z-index: 10;
+      pointer-events: none;
+      letter-spacing: .05em;
+    }
+
+    /* Gain / speed labels overlaid on canvas */
+    .mon-overlay-labels {
+      position: absolute;
+      bottom: 8px;
+      left: 0; right: 0;
+      display: flex;
+      justify-content: space-between;
+      padding: 0 14px;
+      font-family: 'Share Tech Mono', monospace;
+      font-size: .7rem;
+      color: rgba(0,200,70,.45);
+      pointer-events: none;
+      z-index: 10;
+    }
+
+    /* Canvas layers */
+    .mon-canvas-wrap {
+      position: absolute;
+      inset: 0;
+    }
+
+    #ecgGrid, #ecgTrace {
+      position: absolute;
+      top: 0; left: 0;
+    }
+
+    #ecgTrace { background: transparent; }
+
+    /* ── Bottom metrics bar ───────────────────────────────────────────── */
+    .mon-metrics-bar {
+      display: flex;
+      align-items: stretch;
+      background: rgba(4,12,26,.97);
+      border-top: 1px solid rgba(0,200,70,.15);
+      flex-shrink: 0;
+      height: 110px;
+    }
+
+    /* BPM panel */
+    .mon-bpm-panel {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      padding: .5rem 2rem;
+      border-right: 1px solid rgba(255,255,255,.06);
+      min-width: 150px;
+      position: relative;
+    }
+
+    .bpm-digital {
+      font-family: 'Share Tech Mono', monospace;
+      font-size: 3.2rem;
+      font-weight: 400;
+      line-height: 1;
+      color: #22c55e;
+      letter-spacing: -.02em;
+      text-shadow: 0 0 18px rgba(34,197,94,.5);
+      transition: color .3s;
+    }
+
+    .bpm-digital.bpm-abnormal {
+      color: #f97316;
+      text-shadow: 0 0 18px rgba(249,115,22,.5);
+    }
+
+    .bpm-label {
+      font-size: .65rem;
+      font-weight: 700;
+      letter-spacing: .14em;
+      text-transform: uppercase;
+      color: rgba(255,255,255,.3);
+      margin-top: .2rem;
+    }
+
+    /* Heart icon */
+    #heartIcon {
+      position: absolute;
+      top: 8px; right: 10px;
+      font-size: 1.2rem;
+      color: #f87171;
+    }
+
+    @keyframes heartBeat {
+      0%   { transform: scale(1);    }
+      25%  { transform: scale(1.55); }
+      45%  { transform: scale(1);    }
+      65%  { transform: scale(1.25); }
+      80%  { transform: scale(1);    }
+      100% { transform: scale(1);    }
+    }
+
+    #heartIcon.heart-beat { animation: heartBeat .45s ease; }
+
+    /* BPM trend sparkline */
+    .mon-sparkline-panel {
+      display: flex;
+      flex-direction: column;
+      justify-content: center;
+      padding: .5rem 1rem;
+      border-right: 1px solid rgba(255,255,255,.06);
+      min-width: 130px;
+    }
+
+    #bpmSparkline {
+      width: 120px;
+      height: 42px;
+      display: block;
+    }
+
+    .mon-sparkline-label {
+      font-size: .65rem;
+      color: rgba(255,255,255,.3);
+      letter-spacing: .08em;
+      text-transform: uppercase;
+      margin-bottom: .3rem;
+    }
+
+    /* Lead / signal panel */
+    .mon-signal-panel {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: .6rem;
+      padding: .5rem 1.5rem;
+      border-right: 1px solid rgba(255,255,255,.06);
+      min-width: 130px;
+    }
+
+    .mon-lead-ok {
+      display: flex;
+      align-items: center;
+      gap: .45rem;
+      font-size: .82rem;
+      font-weight: 700;
+      color: #4ade80;
+    }
+
+    .mon-lead-off {
+      display: flex;
+      align-items: center;
+      gap: .45rem;
+      font-size: .82rem;
+      font-weight: 700;
+      color: #f87171;
+      animation: alertPulse 1.2s ease-in-out infinite;
+    }
+
+    .mon-sample-count {
+      font-family: 'Share Tech Mono', monospace;
+      font-size: .72rem;
+      color: rgba(255,255,255,.25);
+    }
+
+    /* Controls panel */
+    .mon-ctrl-panel {
+      flex: 1;
+      display: flex;
+      align-items: center;
+      justify-content: flex-end;
+      gap: .6rem;
+      padding: .5rem 1.5rem;
+      flex-wrap: wrap;
+    }
+
+    .mon-sweep-wrap {
+      display: flex;
+      align-items: center;
+      gap: .5rem;
+      font-size: .75rem;
+      color: rgba(255,255,255,.4);
+    }
+
+    .mon-sweep-wrap select {
+      background: rgba(255,255,255,.06);
+      border: 1px solid rgba(255,255,255,.12);
+      border-radius: 6px;
+      color: #e2e8f0;
+      font-size: .75rem;
+      padding: .2rem .5rem;
+      outline: none;
+    }
+
+    .mon-sweep-wrap select option { background: #0a1628; }
+
+    .mon-record-btn {
+      background: linear-gradient(135deg, #dc2626, #b91c1c);
+      border: none;
+      color: white;
+      font-weight: 700;
+      font-size: .82rem;
+      padding: .5rem 1.2rem;
+      border-radius: 8px;
+      cursor: pointer;
+      display: inline-flex;
+      align-items: center;
+      gap: .4rem;
+      text-decoration: none;
+      transition: all .18s;
+      box-shadow: 0 4px 16px rgba(220,38,38,.35);
+    }
+
+    .mon-record-btn:hover {
+      transform: translateY(-1px);
+      box-shadow: 0 6px 24px rgba(220,38,38,.5);
+      color: white;
+    }
+
+    /* ── Scan-line overlay (premium TV-screen effect) ─────────────────── */
+    .mon-scanlines {
+      position: absolute;
+      inset: 0;
+      background: repeating-linear-gradient(
+        0deg,
+        transparent,
+        transparent 2px,
+        rgba(0,0,0,.06) 2px,
+        rgba(0,0,0,.06) 4px
+      );
+      pointer-events: none;
+      z-index: 5;
+    }
+
+    /* ── Responsive ───────────────────────────────────────────────────── */
+    @media (max-width: 768px) {
+      .mon-topbar { padding: .45rem .75rem; gap: .5rem; }
+      .mon-brand  { font-size: .9rem; }
+      .mon-metrics-bar { height: 90px; }
+      .bpm-digital { font-size: 2.4rem; }
+      .mon-bpm-panel { min-width: 110px; padding: .5rem 1rem; }
+      .mon-sparkline-panel { display: none; }
+      .mon-ctrl-panel { padding: .5rem .75rem; }
+    }
+
+    @media (max-width: 480px) {
+      .mon-signal-panel { display: none; }
+    }
+  </style>
+</head>
+<body>
+
+<div class="mon-shell">
+
+  <!-- ── Top control bar ──────────────────────────────────────────────── -->
+  <div class="mon-topbar">
+
+    <!-- Brand + back link -->
+    <div class="d-flex align-items-center gap-3">
+      <a href="{{ url_for('index') }}" class="mon-back-link">
+        <i class="fa-solid fa-arrow-left"></i>
+      </a>
+      <a href="{{ url_for('index') }}" class="mon-brand text-decoration-none">
+        <div class="mon-brand-icon"><i class="fa-solid fa-heart-pulse"></i></div>
+        <span>CardioScan AI</span>
+      </a>
+      <span style="font-size:.7rem;color:rgba(255,255,255,.3);font-weight:600;
+                   letter-spacing:.06em;text-transform:uppercase;">Live Monitor</span>
+    </div>
+
+    <!-- Controls -->
+    <div class="mon-topbar-controls">
+
+      <!-- Patient selector -->
+      {% if patients %}
+      <div class="d-flex align-items-center gap-1">
+        <span class="mon-field-label">Patient:</span>
+        <select class="mon-field" id="patientSel"
+                onchange="location.href=this.value ? '/monitor?patient_id='+this.value : '/monitor'">
+          <option value="">— Select —</option>
+          {% for p in patients %}
+          <option value="{{ p.id }}"
+                  {{ 'selected' if patient_id == p.id else '' }}>
+            {{ p.name }}
+          </option>
+          {% endfor %}
+        </select>
+      </div>
+      {% endif %}
+
+      <!-- Serial port field -->
+      <div class="d-flex align-items-center gap-1">
+        <span class="mon-field-label">Port:</span>
+        <input class="mon-field" id="serialPort"
+               value="/dev/ttyUSB0" style="width:140px;" />
+      </div>
+
+      <!-- Simulation checkbox -->
+      <label class="mon-chk-wrap">
+        <input type="checkbox" id="chkSim" />
+        Demo mode
+      </label>
+
+      <!-- Connect / Disconnect -->
+      <button class="btn-mon btn-mon-green" id="btnConnect">
+        <i class="fa-solid fa-plug"></i> Connect
+      </button>
+      <button class="btn-mon btn-mon-red" id="btnDisconnect">
+        <i class="fa-solid fa-power-off"></i> Stop
+      </button>
+
+      <!-- Status badge -->
+      <span class="mon-status-badge mon-status-idle" id="connStatus">Disconnected</span>
+      <span class="sim-badge" id="simBadge">
+        <i class="fa-solid fa-flask"></i> SIM
+      </span>
+
+      <!-- Clock -->
+      <span class="mon-clock" id="monClock">--:--:--</span>
+    </div>
+
+  </div>
+
+  <!-- ── ECG canvas area ───────────────────────────────────────────────── -->
+  <div class="mon-ecg-area">
+
+    <!-- Scan-lines overlay -->
+    <div class="mon-scanlines"></div>
+
+    <!-- Channel label -->
+    <div class="mon-channel-label">
+      <i class="fa-solid fa-circle" style="font-size:.5rem;margin-right:.35rem;
+         color:rgba(0,255,127,.8);"></i>Lead I
+      {% if patient %}&nbsp;·&nbsp;{{ patient.name }}{% endif %}
+    </div>
+
+    <!-- Dual canvas -->
+    <div class="mon-canvas-wrap">
+      <canvas id="ecgGrid"></canvas>
+      <canvas id="ecgTrace"></canvas>
+    </div>
+
+  </div>
+
+  <!-- ── Bottom metrics bar ────────────────────────────────────────────── -->
+  <div class="mon-metrics-bar">
+
+    <!-- BPM -->
+    <div class="mon-bpm-panel">
+      <i class="fa-solid fa-heart" id="heartIcon"></i>
+      <div class="bpm-digital" id="bpmVal">--</div>
+      <div class="bpm-label">BPM</div>
+    </div>
+
+    <!-- BPM trend sparkline -->
+    <div class="mon-sparkline-panel">
+      <div class="mon-sparkline-label">HR trend</div>
+      <canvas id="bpmSparkline" width="120" height="42"></canvas>
+      <canvas id="bpmTrend" style="display:none;"></canvas>
+    </div>
+
+    <!-- Lead status -->
+    <div class="mon-signal-panel">
+      <div class="mon-lead-ok" id="leadStatus">
+        <i class="fa-solid fa-circle"></i> Lead I
+      </div>
+      <div class="mon-sample-count">
+        <i class="fa-solid fa-wave-square me-1" style="opacity:.5;"></i>
+        <span id="sampleCount">0</span> samples
+      </div>
+    </div>
+
+    <!-- Controls -->
+    <div class="mon-ctrl-panel">
+
+      <!-- Sweep speed selector -->
+      <div class="mon-sweep-wrap">
+        <span>Sweep:</span>
+        <select id="btnSweep" title="Seconds of ECG visible at once">
+          <option value="5">5 s</option>
+          <option value="8" selected>8 s</option>
+          <option value="12">12 s</option>
+          <option value="16">16 s</option>
+        </select>
+      </div>
+
+      <!-- Pause / Resume -->
+      <button class="btn-mon" id="btnPause">
+        <i class="fa-solid fa-pause me-1"></i>Pause
+      </button>
+
+      <!-- Record to session (links to existing record flow) -->
+      {% if patient %}
+        <a href="{{ url_for('record', patient_id=patient.id) }}"
+           class="mon-record-btn">
+          <i class="fa-solid fa-circle-dot"></i>
+          Record Session
+        </a>
+      {% else %}
+        <a href="{{ url_for('patient_new') }}"
+           class="btn-mon btn-mon-active">
+          <i class="fa-solid fa-user-plus me-1"></i>Select Patient → Record
+        </a>
+      {% endif %}
+
+    </div>
+
+  </div>
+
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
+<script src="{{ url_for('static', filename='js/ecg_monitor.js') }}"></script>
+
+</body>
+</html>

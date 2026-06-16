@@ -16,6 +16,10 @@
         <i class="fa-solid fa-user-circle me-2" style="color:var(--primary);"></i>
         Patient Profile
       </h1>
+      <a href="{{ url_for('monitor') }}?patient_id={{ patient.id }}"
+         class="btn btn-outline-primary btn-lg me-2">
+        <i class="fa-solid fa-display me-2"></i>Live Monitor
+      </a>
       <a href="{{ url_for('record', patient_id=patient.id) }}"
          class="btn btn-primary btn-lg">
         <i class="fa-solid fa-heart-pulse me-2"></i>New Recording

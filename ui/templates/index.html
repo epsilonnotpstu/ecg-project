@@ -70,6 +70,33 @@
     </div>
   </div>
 
+  <!-- Live Monitor quick-launch banner -->
+  <a href="{{ url_for('monitor') }}"
+     class="d-flex align-items-center gap-3 text-decoration-none mb-4 p-3"
+     style="background:linear-gradient(135deg,rgba(0,200,70,.08),rgba(37,99,235,.08));
+            border:1px solid rgba(0,200,70,.25);border-radius:var(--radius);
+            transition:all .22s;">
+    <div style="width:46px;height:46px;border-radius:50%;flex-shrink:0;
+                background:rgba(0,200,70,.12);border:1.5px solid rgba(0,200,70,.35);
+                display:flex;align-items:center;justify-content:center;">
+      <i class="fa-solid fa-heart-pulse" style="color:#22c55e;font-size:1.1rem;
+         animation:pulse-dot 1.5s ease-in-out infinite;"></i>
+    </div>
+    <div>
+      <div style="font-weight:700;font-size:.92rem;color:var(--text-1);">
+        Live ECG Monitor
+        <span style="margin-left:.5rem;font-size:.68rem;font-weight:700;
+                     background:rgba(0,200,70,.15);color:#22c55e;
+                     border:1px solid rgba(0,200,70,.3);border-radius:999px;
+                     padding:.1rem .5rem;letter-spacing:.04em;">LIVE</span>
+      </div>
+      <div style="font-size:.8rem;color:var(--text-3);margin-top:.15rem;">
+        Real-time ECG waveform — hospital-style scrolling display with AI BPM detection
+      </div>
+    </div>
+    <i class="fa-solid fa-arrow-right ms-auto" style="color:var(--text-3);"></i>
+  </a>
+
   <!-- Patient grid -->
   {% if patients %}
     <div class="d-flex align-items-center justify-content-between mb-3">

@@ -2,6 +2,7 @@ import sys
 import os
 import json
 import time
+import math
 
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(BASE_DIR, "scripts"))
@@ -10,6 +11,7 @@ os.chdir(BASE_DIR)  # scripts use relative paths like raw/esp/
 from flask import (
     Flask, render_template, request, redirect,
     url_for, flash, send_file, abort, send_from_directory,
+    Response, stream_with_context,
 )
 from db_setup import init_db, get_connection
 
@@ -263,5 +265,102 @@ def media(filepath):
     return send_from_directory(BASE_DIR, filepath)
 
 
+@app.route("/monitor")
+def monitor():
+    patient_id = request.args.get("patient_id", type=int)
+    conn = get_connection()
+    patients = conn.execute(
+        "SELECT id, name FROM patients ORDER BY name"
+    ).fetchall()
+    patient = None
+    if patient_id:
+        patient = conn.execute(
+            "SELECT * FROM patients WHERE id=?", (patient_id,)
+        ).fetchone()
+    conn.close()
+    return render_template("monitor.html",
+                           patients=patients,
+                           patient=patient,
+                           patient_id=patient_id)
+
+
+# ── ECG sample simulator (Gaussian P-QRS-T model) ─────────────────────────
+def _ecg_sim(t_sec, bpm=72):
+    period = 60.0 / bpm
+    ph = (t_sec % period) / period       # 0..1 within one beat
+    # (amplitude, center_phase, width_phase)
+    waves = [
+        ( 0.09,  0.10, 0.026),           # P
+        (-0.05,  0.22, 0.009),           # Q
+        ( 1.00,  0.245, 0.0065),         # R
+        (-0.18,  0.27, 0.009),           # S
+        ( 0.28,  0.45, 0.055),           # T
+    ]
+    v = sum(a * math.exp(-((ph - c) ** 2) / (2 * w * w)) for a, c, w in waves)
+    v += 0.018 * math.sin(2 * math.pi * 0.12 * t_sec)  # baseline wander
+    return max(0, min(1023, int(512 + v * 85)))
+
+
+@app.route("/api/ecg-stream")
+def ecg_stream():
+    port     = request.args.get("port", "/dev/ttyUSB0")
+    baud     = int(request.args.get("baud", "115200"))
+    simulate = request.args.get("sim", "0") == "1"
+
+    def generate():
+        if not simulate:
+            # Try to open real serial port
+            try:
+                import serial as _serial
+                ser = _serial.Serial(port, baud, timeout=1)
+                time.sleep(1.5)
+                yield f"data: {json.dumps({'status': 'connected', 'port': port})}\n\n"
+                while True:
+                    raw = ser.readline().decode("utf-8", errors="ignore").strip()
+                    if not raw:
+                        continue
+                    parts = raw.split(",")
+                    if len(parts) == 3:
+                        try:
+                            ts, val, ok = int(parts[0]), int(parts[1]), int(parts[2])
+                            yield f"data: {json.dumps({'v': val, 'ok': ok, 't': ts})}\n\n"
+                        except ValueError:
+                            continue
+            except Exception as exc:
+                yield f"data: {json.dumps({'status': 'error', 'msg': str(exc)})}\n\n"
+                # Fall through to simulation below
+                simulate_flag = True
+            else:
+                return
+        else:
+            simulate_flag = True
+
+        # Simulation fallback
+        if simulate or simulate_flag:
+            yield f"data: {json.dumps({'status': 'simulating'})}\n\n"
+            t = 0.0
+            dt = 1.0 / 250.0
+            t0 = time.time()
+            sample_idx = 0
+            while True:
+                val = _ecg_sim(t)
+                yield f"data: {json.dumps({'v': val, 'ok': 1, 't': sample_idx * 4, 'sim': True})}\n\n"
+                sample_idx += 1
+                t += dt
+                # Pace to ~250 Hz
+                next_time = t0 + sample_idx * dt
+                sleep = next_time - time.time()
+                if sleep > 0:
+                    time.sleep(sleep)
+
+    resp = Response(
+        stream_with_context(generate()),
+        mimetype="text/event-stream",
+    )
+    resp.headers["Cache-Control"]     = "no-cache"
+    resp.headers["X-Accel-Buffering"] = "no"
+    return resp
+
+
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=5000, debug=True)
+    app.run(host="0.0.0.0", port=5000, debug=True, threaded=True)
