@@ -314,55 +314,57 @@ def _ecg_sim(t_sec, bpm=72):
 
 @app.route("/api/ecg-stream")
 def ecg_stream():
+    import serial as _serial
     port     = request.args.get("port", "/dev/ttyUSB0")
     baud     = int(request.args.get("baud", "115200"))
     simulate = request.args.get("sim", "0") == "1"
 
     def generate():
         if not simulate:
-            # Try to open real serial port
             try:
-                import serial as _serial
                 ser = _serial.Serial(port, baud, timeout=1)
                 time.sleep(1.5)
                 yield f"data: {json.dumps({'status': 'connected', 'port': port})}\n\n"
+
                 while True:
-                    raw = ser.readline().decode("utf-8", errors="ignore").strip()
+                    try:
+                        raw = ser.readline().decode("utf-8", errors="ignore").strip()
+                    except _serial.SerialException:
+                        yield f"data: {json.dumps({'status': 'error', 'msg': 'Serial disconnected'})}\n\n"
+                        break
+
                     if not raw:
                         continue
+
                     parts = raw.split(",")
-                    if len(parts) == 3:
+                    if len(parts) >= 3:
                         try:
-                            ts, val, ok = int(parts[0]), int(parts[1]), int(parts[2])
+                            ts  = int(parts[0])
+                            val = int(parts[1])
+                            ok  = int(parts[2])
                             yield f"data: {json.dumps({'v': val, 'ok': ok, 't': ts})}\n\n"
                         except ValueError:
                             continue
+
             except Exception as exc:
                 yield f"data: {json.dumps({'status': 'error', 'msg': str(exc)})}\n\n"
-                # Fall through to simulation below
-                simulate_flag = True
-            else:
-                return
-        else:
-            simulate_flag = True
+                simulate = True
 
-        # Simulation fallback
-        if simulate or simulate_flag:
+        if simulate:
             yield f"data: {json.dumps({'status': 'simulating'})}\n\n"
-            t = 0.0
-            dt = 1.0 / 250.0
-            t0 = time.time()
-            sample_idx = 0
+            t   = 0.0
+            dt  = 1.0 / 125.0
+            t0  = time.time()
+            idx = 0
             while True:
-                val = _ecg_sim(t)
-                yield f"data: {json.dumps({'v': val, 'ok': 1, 't': sample_idx * 4, 'sim': True})}\n\n"
-                sample_idx += 1
-                t += dt
-                # Pace to ~250 Hz
-                next_time = t0 + sample_idx * dt
-                sleep = next_time - time.time()
-                if sleep > 0:
-                    time.sleep(sleep)
+                val = _ecg_sim(t, bpm=72)
+                yield f"data: {json.dumps({'v': val, 'ok': 1, 't': idx * 8, 'sim': True})}\n\n"
+                idx += 1
+                t   += dt
+                nxt  = t0 + idx * dt
+                slp  = nxt - time.time()
+                if slp > 0:
+                    time.sleep(slp)
 
     resp = Response(
         stream_with_context(generate()),
@@ -370,6 +372,7 @@ def ecg_stream():
     )
     resp.headers["Cache-Control"]     = "no-cache"
     resp.headers["X-Accel-Buffering"] = "no"
+    resp.headers["Connection"]        = "keep-alive"
     return resp
 
 if __name__ == "__main__":
