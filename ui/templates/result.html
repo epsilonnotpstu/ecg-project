@@ -154,6 +154,44 @@
 
   </div>
 
+
+
+
+  <!-- ?? Motion artifact status ???????????????????????????????????????? -->
+  {% if recording.motion_pct is not none %}
+    <div class="row g-4 mb-4">
+      <div class="col-12">
+        {% if recording.motion_pct > 20 %}
+        <div style="background:#fef3c7;border-left:4px solid #d97706;
+                    padding:12px 16px;border-radius:0 8px 8px 0;
+                    font-size:.85rem;color:#92400e;
+                    display:flex;align-items:center;gap:10px;">
+          <i class="fa-solid fa-person-walking"
+             style="font-size:1.1rem;flex-shrink:0;"></i>
+          <div>
+            <strong>Motion detected during
+            {{ "%.1f"|format(recording.motion_pct) }}% of recording.</strong>
+            Some beats may be affected by movement artifact.
+            Consider re-recording while staying completely still.
+          </div>
+        </div>
+        {% else %}
+        <div style="background:#f0fdf4;border-left:4px solid #16a34a;
+                    padding:12px 16px;border-radius:0 8px 8px 0;
+                    font-size:.85rem;color:#15803d;
+                    display:flex;align-items:center;gap:10px;">
+          <i class="fa-solid fa-person"
+             style="font-size:1.1rem;flex-shrink:0;"></i>
+          <div>
+            <strong>No significant motion detected</strong>
+            ({{ "%.1f"|format(recording.motion_pct) }}% of samples).
+            Signal quality: good.
+          </div>
+        </div>
+        {% endif %}
+      </div>
+    </div>
+  {% endif %}
   <!-- ── Row 2: AI Classification ─────────────────────────────────────── -->
   <div class="row g-4 mb-4">
     <div class="col-12">

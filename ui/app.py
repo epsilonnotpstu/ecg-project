@@ -137,7 +137,9 @@ def record_start(patient_id):
     timestamp = time.strftime("%Y%m%d_%H%M%S")
     session_name = f"patient{patient_id}_{timestamp}"
 
-    raw_csv                    = do_record(duration, session_name)
+   
+    raw_csv, motion_pct = do_record(duration, session_name)
+
     filtered_csv, compare_plot = process_file(raw_csv)
     result                     = analyze_file(filtered_csv)
 
@@ -152,12 +154,15 @@ def record_start(patient_id):
 
     conn = get_connection()
     cur = conn.execute("""
-        INSERT INTO recordings
+
+
+
+INSERT INTO recordings
           (patient_id, session_name, duration_sec, raw_file, filtered_file,
            compare_plot, bpm_plot, num_peaks, bpm, status, rr_intervals_json,
            ai_available, ai_dominant_class, ai_class_distribution,
-           ai_alert_count, ai_beats_json)
-        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+           ai_alert_count, ai_beats_json, motion_pct)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
     """, (
         patient_id, session_name, duration,
         raw_csv, filtered_csv, compare_plot, result["plot"],
@@ -168,7 +173,12 @@ def record_start(patient_id):
         json.dumps(ai.get("class_distribution", {})),
         ai.get("alert_count", 0),
         json.dumps(ai.get("beats", [])),
+        motion_pct,
     ))
+
+
+
+
     recording_id = cur.lastrowid
     conn.commit()
     conn.close()
@@ -207,7 +217,8 @@ def result(recording_id):
                            recording=recording, patient=patient,
                            rr_intervals=rr, report=report,
                            ai_class_dist=ai_class_dist,
-                           ai_beats=ai_beats)
+                           ai_beats=ai_beats,
+                           motion_pct=recording["motion_pct"])
 
 
 @app.route("/report/<int:recording_id>")
@@ -361,6 +372,5 @@ def ecg_stream():
     resp.headers["X-Accel-Buffering"] = "no"
     return resp
 
-
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=5000, debug=False, use_reloader=False, threaded=True)
+    app.run(host="0.0.0.0", port=5000, debug=False, use_reloader=False)
