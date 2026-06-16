@@ -6,7 +6,7 @@ import math
 
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(BASE_DIR, "scripts"))
-os.chdir(BASE_DIR)  # scripts use relative paths like raw/esp/
+os.chdir(BASE_DIR)
 
 from flask import (
     Flask, render_template, request, redirect,
@@ -20,7 +20,6 @@ app.secret_key = "cardioscan-secret-key-change-in-prod"
 
 init_db()
 
-# ── Helpers ──────────────────────────────────────────────────────────────────
 
 def _status_class(status: str) -> str:
     if "Normal" in status:
@@ -33,16 +32,14 @@ def _status_class(status: str) -> str:
 app.jinja_env.globals["status_class"] = _status_class
 
 
-# ── Routes ───────────────────────────────────────────────────────────────────
-
 @app.route("/")
 def index():
     conn = get_connection()
     patients = conn.execute("""
         SELECT
             p.*,
-            r.bpm      AS last_bpm,
-            r.status   AS last_status,
+            r.bpm        AS last_bpm,
+            r.status     AS last_status,
             r.created_at AS last_recording_at
         FROM patients p
         LEFT JOIN recordings r
@@ -63,15 +60,14 @@ def index():
 @app.route("/patient/new", methods=["GET", "POST"])
 def patient_new():
     if request.method == "POST":
-        name = request.form.get("name", "").strip()
-        age  = request.form.get("age", "").strip()
+        name     = request.form.get("name", "").strip()
+        age      = request.form.get("age", "").strip()
         gender   = request.form.get("gender", "").strip()
         symptoms = request.form.get("symptoms", "").strip()
 
         if not name:
             flash("Patient name is required.", "danger")
-            return render_template("patient_new.html",
-                                   form=request.form)
+            return render_template("patient_new.html", form=request.form)
 
         conn = get_connection()
         cur = conn.execute(
@@ -121,9 +117,9 @@ def record(patient_id):
 @app.route("/record/<int:patient_id>/start", methods=["POST"])
 def record_start(patient_id):
     import logging
-    from record_session import record as do_record
-    from filter_signal import process_file
-    from bpm_detect import analyze_file
+    from record_session   import record as do_record
+    from filter_signal    import process_file
+    from bpm_detect       import analyze_file
 
     conn = get_connection()
     patient = conn.execute(
@@ -133,17 +129,14 @@ def record_start(patient_id):
     if not patient:
         abort(404)
 
-    duration = int(request.form.get("duration", 15))
-    timestamp = time.strftime("%Y%m%d_%H%M%S")
+    duration     = int(request.form.get("duration", 15))
+    timestamp    = time.strftime("%Y%m%d_%H%M%S")
     session_name = f"patient{patient_id}_{timestamp}"
 
-   
     raw_csv, motion_pct = do_record(duration, session_name)
-
     filtered_csv, compare_plot = process_file(raw_csv)
-    result                     = analyze_file(filtered_csv)
+    result = analyze_file(filtered_csv)
 
-    # AI beat classification — non-fatal if model absent or error
     ai = {"available": False, "dominant_class": None,
           "class_distribution": {}, "alert_count": 0, "beats": []}
     try:
@@ -154,10 +147,7 @@ def record_start(patient_id):
 
     conn = get_connection()
     cur = conn.execute("""
-
-
-
-INSERT INTO recordings
+        INSERT INTO recordings
           (patient_id, session_name, duration_sec, raw_file, filtered_file,
            compare_plot, bpm_plot, num_peaks, bpm, status, rr_intervals_json,
            ai_available, ai_dominant_class, ai_class_distribution,
@@ -175,10 +165,6 @@ INSERT INTO recordings
         json.dumps(ai.get("beats", [])),
         motion_pct,
     ))
-
-
-
-
     recording_id = cur.lastrowid
     conn.commit()
     conn.close()
@@ -210,9 +196,10 @@ def result(recording_id):
     ).fetchone()
     conn.close()
 
-    rr = json.loads(recording["rr_intervals_json"]) if recording["rr_intervals_json"] else []
-    ai_class_dist = json.loads(recording["ai_class_distribution"]) if recording["ai_class_distribution"] else {}
+    rr            = json.loads(recording["rr_intervals_json"])      if recording["rr_intervals_json"]      else []
+    ai_class_dist = json.loads(recording["ai_class_distribution"])  if recording["ai_class_distribution"]  else {}
     ai_beats      = json.loads(recording["ai_beats_json"])          if recording["ai_beats_json"]          else []
+
     return render_template("result.html",
                            recording=recording, patient=patient,
                            rr_intervals=rr, report=report,
@@ -232,7 +219,7 @@ def report(recording_id):
     if not recording:
         conn.close()
         abort(404)
-    patient  = conn.execute(
+    patient = conn.execute(
         "SELECT * FROM patients WHERE id=?", (recording["patient_id"],)
     ).fetchone()
     existing = conn.execute(
@@ -244,8 +231,8 @@ def report(recording_id):
     else:
         reports_dir = os.path.join(BASE_DIR, "reports")
         os.makedirs(reports_dir, exist_ok=True)
-        out = os.path.join(reports_dir,
-                           f"{recording['session_name']}_report.pdf")
+        out      = os.path.join(reports_dir,
+                                f"{recording['session_name']}_report.pdf")
         pdf_path = generate_report(dict(patient), dict(recording), out)
         conn.execute(
             "INSERT INTO reports (recording_id, pdf_file) VALUES (?,?)",
@@ -265,7 +252,7 @@ def report(recording_id):
 @app.route("/media/<path:filepath>")
 def media(filepath):
     allowed = ("raw", "filtered", "reports")
-    parts = filepath.replace("\\", "/").split("/")
+    parts   = filepath.replace("\\", "/").split("/")
     if not parts or parts[0] not in allowed:
         abort(403)
     safe = os.path.normpath(os.path.join(BASE_DIR, filepath))
@@ -279,8 +266,8 @@ def media(filepath):
 @app.route("/monitor")
 def monitor():
     patient_id = request.args.get("patient_id", type=int)
-    conn = get_connection()
-    patients = conn.execute(
+    conn       = get_connection()
+    patients   = conn.execute(
         "SELECT id, name FROM patients ORDER BY name"
     ).fetchall()
     patient = None
@@ -295,32 +282,34 @@ def monitor():
                            patient_id=patient_id)
 
 
-# ── ECG sample simulator (Gaussian P-QRS-T model) ─────────────────────────
 def _ecg_sim(t_sec, bpm=72):
+    """Synthetic P-QRS-T waveform for demo/simulation mode."""
     period = 60.0 / bpm
-    ph = (t_sec % period) / period       # 0..1 within one beat
-    # (amplitude, center_phase, width_phase)
-    waves = [
-        ( 0.09,  0.10, 0.026),           # P
-        (-0.05,  0.22, 0.009),           # Q
-        ( 1.00,  0.245, 0.0065),         # R
-        (-0.18,  0.27, 0.009),           # S
-        ( 0.28,  0.45, 0.055),           # T
+    ph     = (t_sec % period) / period
+    waves  = [
+        ( 0.09,  0.10, 0.026),
+        (-0.05,  0.22, 0.009),
+        ( 1.00,  0.245, 0.0065),
+        (-0.18,  0.27, 0.009),
+        ( 0.28,  0.45, 0.055),
     ]
     v = sum(a * math.exp(-((ph - c) ** 2) / (2 * w * w)) for a, c, w in waves)
-    v += 0.018 * math.sin(2 * math.pi * 0.12 * t_sec)  # baseline wander
+    v += 0.018 * math.sin(2 * math.pi * 0.12 * t_sec)
     return max(0, min(1023, int(512 + v * 85)))
 
 
 @app.route("/api/ecg-stream")
 def ecg_stream():
     import serial as _serial
+
     port     = request.args.get("port", "/dev/ttyUSB0")
     baud     = int(request.args.get("baud", "115200"))
     simulate = request.args.get("sim", "0") == "1"
 
     def generate():
-        if not simulate:
+        use_sim = simulate  # local copy — avoids Python closure rebinding bug
+
+        if not use_sim:
             try:
                 ser = _serial.Serial(port, baud, timeout=1)
                 time.sleep(1.5)
@@ -337,6 +326,7 @@ def ecg_stream():
                         continue
 
                     parts = raw.split(",")
+                    # Support 3-column (old) and 6-column (MPU6050) format
                     if len(parts) >= 3:
                         try:
                             ts  = int(parts[0])
@@ -348,12 +338,12 @@ def ecg_stream():
 
             except Exception as exc:
                 yield f"data: {json.dumps({'status': 'error', 'msg': str(exc)})}\n\n"
-                simulate = True
+                use_sim = True  # fallback to simulation on serial error
 
-        if simulate:
+        if use_sim:
             yield f"data: {json.dumps({'status': 'simulating'})}\n\n"
             t   = 0.0
-            dt  = 1.0 / 125.0
+            dt  = 1.0 / 125.0   # 125 Hz to match ESP8266 rate
             t0  = time.time()
             idx = 0
             while True:
@@ -374,6 +364,7 @@ def ecg_stream():
     resp.headers["X-Accel-Buffering"] = "no"
     resp.headers["Connection"]        = "keep-alive"
     return resp
+
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000, debug=False, use_reloader=False)
